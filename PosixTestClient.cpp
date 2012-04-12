@@ -13,6 +13,10 @@
 #include <iomanip>
 #include <sstream>
 #include <fstream>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 using namespace std;
 
 ofstream logfile0, logfile1, logfile2, logfile3;
@@ -35,8 +39,8 @@ const int totalQuantity = 1000000;
 const int PING_DEADLINE = 10; // seconds
 const int SLEEP_BETWEEN_PINGS = 30; // seconds
 
-const double sl = 0.00010;
-const double tp = 0.00010;
+const double sl = 0.0005;
+const double tp = 0.0005;
 double trail = 0.0010;
 const double tick = 0.0001;
 
@@ -47,12 +51,14 @@ vector<double> ema10, ema20, ema50;
 int cnt = 0;
 
 //const static int ticks = 50;
-double bid, ask, h, l;
+double bid=0.0, ask=0.0, h=0.0, l=0.0;
 
 const size_t NUM_OF_BARS = 0;
 // should I assign default value here?
 int NUM_OF_TICKS = 10;
 double avgPrice = 0.0;
+
+string clientIdStr = "";
 
 ///////////////////////////////////////////////////////////
 // member funcs
@@ -73,6 +79,11 @@ PosixTestClient::PosixTestClient(int clientId, bool tflag=false)
     m_contract.secType = "CASH";
     m_contract.exchange = "IDEALPRO";
     m_contract.currency = "USD";
+    ostringstream convert;
+    convert << m_clientId;
+    clientIdStr = convert.str();
+    //PyRun_SimpleString("import pylab");
+    //PyRun_SimpleString("pylab.ion()");
 }
 
 PosixTestClient::~PosixTestClient()
@@ -221,85 +232,94 @@ void PosixTestClient::orderStatus(OrderId orderId, const IBString &status, int f
 	   double lastFillPrice, int clientId, const IBString& whyHeld)
 
 {
-    Order order_stoploss, order_profittaking, order_trailing;
-    //OrderId stoplossId, profittakingId;
     printf("Client %d: Order: id=%ld, parentId=%d, status=%s, filled = %d\n", m_clientId, orderId, parentId, status.c_str(), filled);
-    
-    // what if Filled message is after attached child order status message?
+    if(clientId == m_clientId){
+        Order order_stoploss, order_profittaking, order_trailing;
+        //OrderId stoplossId, profittakingId;
+        
+        
+        // what if Filled message is after attached child order status message?
 
 
-    if(!USETRAIL){
-        if(parentId!=0 && status=="Filled"){
-            HAS_POSITION = 0;
-            avgPrice = 0.0;
-        }
-        if(parentId==0 && status=="Filled"){
-            avgPrice = avgFillPrice;
-        }
-    }
-    else {
-        if(parentId==0 && status=="Filled" && orderId<0){
-            HAS_POSITION = 0;
-        }
-    }
-
-    // STP order is PreSummitted, LMT order is Submitted
-    // modified means 
-    // 1. modify stop price and profit taking price for child orders
-    // 2. attach a trailing stop order for trailing stop
-    if(!m_modified){
         if(!USETRAIL){
-            if(parentId!=0 && status != "Filled"){
-            //cout << "Average filled price is :" << avgPrice << endl;
-            // assume we don't trade negative quote products here
-                if(avgPrice > 0.0){
-                    if(!m_modified && USEMKTENTRY){
+            if(parentId!=0 && status=="Filled"){
+                HAS_POSITION = 0;
+                avgPrice = 0.0;
+            }
+            if(parentId==0 && status=="Filled"){
+                avgPrice = avgFillPrice;
+            }
+        }
+        else {
+            if(parentId==0 && status=="Filled"){
+                if(HAS_POSITION==1 && orderId%2!=0)
+                    HAS_POSITION = 0;
+                if(HAS_POSITION==-1 && orderId%2==0)
+                    HAS_POSITION = 0;
+            }
+        }
 
-                        // try to change the stop order into trailing stop order 
-                        if(parentId%2==0){
-                            order_stoploss.action = "SELL";
-                            order_profittaking.action = "SELL";
-                            order_stoploss.auxPrice = avgPrice - sl;
-                            order_profittaking.lmtPrice = avgPrice + tp;
+        // STP order is PreSummitted, LMT order is Submitted
+        // modified means 
+        // 1. modify stop price and profit taking price for child orders
+        // 2. attach a trailing stop order for trailing stop
+        if(!m_modified){
+            if(!USETRAIL){
+                if(parentId!=0 && status != "Filled"){
+                //cout << "Average filled price is :" << avgPrice << endl;
+                // assume we don't trade negative quote products here
+                    if(avgPrice > 0.0){
+                        if(!m_modified && USEMKTENTRY){
+
+                            // try to change the stop order into trailing stop order 
+                            if(parentId%2==0){
+                                order_stoploss.action = "SELL";
+                                order_profittaking.action = "SELL";
+                                order_stoploss.auxPrice = avgPrice - sl;
+                                order_profittaking.lmtPrice = avgPrice + tp;
+                            }
+
+                            if(parentId%2!=0){
+                                order_stoploss.action = "BUY";
+                                order_profittaking.action = "BUY";
+                                order_stoploss.auxPrice = avgPrice + sl;
+                                order_profittaking.lmtPrice = avgPrice - tp;
+                            }
+                        
+                            order_stoploss.orderType = "STP";
+                            order_profittaking.orderType = "LMT";
+                            order_stoploss.orderRef = "from client " + clientIdStr;
+                            order_profittaking.orderRef = "from client " + clientIdStr;
+                            order_stoploss.totalQuantity = totalQuantity;
+                            order_profittaking.totalQuantity = totalQuantity;
+
+                            m_pClient->placeOrder(parentId + 1, m_contract, order_stoploss);
+                            m_pClient->placeOrder(parentId + 2, m_contract, order_profittaking);
+                            m_modified = true;
                         }
-
-                        if(parentId%2!=0){
-                            order_stoploss.action = "BUY";
-                            order_profittaking.action = "BUY";
-                            order_stoploss.auxPrice = avgPrice + sl;
-                            order_profittaking.lmtPrice = avgPrice - tp;
-                        }
-                    
-                        order_stoploss.orderType = "STP";
-                        order_profittaking.orderType = "LMT";
-                        order_stoploss.totalQuantity = totalQuantity;
-                        order_profittaking.totalQuantity = totalQuantity;
-
-                        m_pClient->placeOrder(parentId + 1, m_contract, order_stoploss);
-                        m_pClient->placeOrder(parentId + 2, m_contract, order_profittaking);
-                        m_modified = true;
                     }
                 }
             }
-        }
 
-        else {
-            order_trailing.totalQuantity = totalQuantity;
-            order_trailing.orderType = "TRAIL";
-            if(orderId%2==0){
-                order_trailing.action = "SELL";
-                order_trailing.auxPrice = trail;
-            }
+            else {
+                order_trailing.totalQuantity = totalQuantity;
+                order_trailing.orderType = "TRAIL";
+                order_trailing.orderRef = "from client " + clientIdStr;
+                if(orderId%2==0){
+                    order_trailing.action = "SELL";
+                    order_trailing.auxPrice = trail;
+                }
 
-            if(orderId%2!=0){
-                order_trailing.action = "BUY";
-                order_trailing.auxPrice = trail; 
+                if(orderId%2!=0){
+                    order_trailing.action = "BUY";
+                    order_trailing.auxPrice = trail; 
+                }
+                // use negative orderId to distinguish MKT order and TRAIL order
+                m_pClient->placeOrder(m_orderId, m_contract, order_trailing);
+                m_orderId = m_orderId + 1; 
+                // here modified means protected by trailing stop order
+                m_modified = true;
             }
-            // use negative orderId to distinguish MKT order and TRAIL order
-            m_pClient->placeOrder(m_orderId, m_contract, order_trailing);
-            m_orderId = m_orderId + 1; 
-            // here modified means protected by trailing stop order
-            m_modified = true;
         }
     }
 }
@@ -354,9 +374,12 @@ void PosixTestClient::currentTime(long time)
         s << m_clientId;
         ss = s.str();
 
-        logfile1.open(("log/client"+ss+"_"+string(curDate)+"_tick.txt").c_str());
-        logfile2.open(("log/client"+ss+"_"+string(curDate)+"_bar.txt").c_str());
-        logfile3.open(("log/client"+ss+"_"+string(curDate)+"_trades.txt").c_str());
+        logfile1.open(("log/client"+ss+"_"+string(curDate)+"_tick.txt").c_str(), ios::out|ios::app);
+        logfile2.open(("log/client"+ss+"_"+string(curDate)+"_bar.txt").c_str(), ios::out|ios::app);
+        logfile3.open(("log/client"+ss+"_"+string(curDate)+"_trades.txt").c_str(), ios::out|ios::app);
+        logfile1 << "--------------------------------------------\n";
+        logfile2 << "--------------------------------------------\n";
+        logfile3 << "--------------------------------------------\n";
     }
 
     /* for 5 minutes bar
@@ -384,10 +407,17 @@ void PosixTestClient::tickPrice(TickerId tickerId, TickType field, double price,
     size_t sz;
     OrderId parentId;
 
-    s_order_parent.totalQuantity = totalQuantity;
-    l_order_parent.totalQuantity = totalQuantity;
+    //printf("Tick %d:\tTickerId = %d, TickType = %d, price = %f, canAutoExecute = %d\n", cnt, static_cast<int>(tickerId), field, price, canAutoExecute);
 
-    if(field == 1){
+    // price = -1 means exchange closed
+
+    if(field==2 && price>0 && cnt>0){
+        ask = price;
+        if(cnt==NUM_OF_TICKS) cnt=0;
+        else ++cnt;
+    }
+
+    if(field==1 && price>0){
         cout << fixed;
         // assume no exception for now() function
         t = time(NULL);
@@ -407,205 +437,208 @@ void PosixTestClient::tickPrice(TickerId tickerId, TickType field, double price,
             if(bid > h) h = bid;
             if(bid < l) l = bid;
         }
+    }
 
-        if(cnt == NUM_OF_TICKS){
-            low.push_back(l);
-            high.push_back(h);
-            last.push_back(bid);
-            cnt = 0;
-            //logfile1 << "Open\tLow\tHigh\tLast\n";
-            t = time(NULL);
-            strftime(curTime, 100, "%Y%m%d %T", localtime(&t));
-            cout << "Client " << m_clientId << ":" << curTime << "," << open.back() << "," << low.back() << "," << high.back() << "," << last.back();
-            logfile2 << curTime << "," << setprecision(5) << open.back() << "," << low.back() << "," << high.back() << "," << last.back();
-            sz = open.size();
-            
-            if(sz >= 10){
-                if(sz == 10)
-                    ema10.push_back(accumulate(last.begin(), last.end(), 0.0)/10);
-                else
-                    ema10.push_back(ema10.back() + (2.0/11.0)*(last.back()-ema10.back()));
-                cout << "|" << setprecision(5) << ema10.back();
-                logfile2 << "\t" << ema10.back();
+    if(cnt == NUM_OF_TICKS){
+        low.push_back(l);
+        high.push_back(h);
+        last.push_back(bid);
+        cnt = 0;
+        //logfile1 << "Open\tLow\tHigh\tLast\n";
+        t = time(NULL);
+        strftime(curTime, 100, "%Y%m%d %T", localtime(&t));
+        cout << "Client " << m_clientId << ":" << curTime << "," << setprecision(5) << open.back() << "," << low.back() << "," << high.back() << "," << last.back();
+        logfile2 << curTime << "," << setprecision(5) << open.back() << "," << low.back() << "," << high.back() << "," << last.back();
+        sz = open.size();
+        
+        if(sz >= 10){
+            if(sz == 10)
+                ema10.push_back(accumulate(last.begin(), last.end(), 0.0)/10);
+            else
+                ema10.push_back(ema10.back() + (2.0/11.0)*(last.back()-ema10.back()));
+            cout << "|" << setprecision(5) << ema10.back();
+            logfile2 << "\t" << setprecision(5) << ema10.back();
+        }
+
+        if(sz >= 20){
+            if(sz == 20)
+                ema20.push_back(accumulate(last.begin(), last.end(), 0.0)/20);
+            else
+                ema20.push_back(ema20.back() + (2.0/21.0)*(last.back()-ema20.back()));
+            cout << "|" << setprecision(5) << ema20.back();
+            logfile2 << "," << setprecision(5) << ema20.back();
+        }
+
+        cout << "\n";
+        logfile2 << endl;
+
+        /* ================================================================================================================= */
+        // this part is the strategy
+        /* 
+        if(sz > NUM_OF_BARS && !HAS_POSITION){
+            if(low[sz-1]>=low[sz-2] && high[sz-1]>high[sz-2]) GOLONG = true;
+            if(low[sz-1]<low[sz-2] && high[sz-1]<=high[sz-2]) GOSHORT = true;
+        }
+        */
+        
+        // ema10 empty should be redudant condition
+        if(ema20.size()>2 && ema10.size()>2 && !HAS_POSITION){
+            if(ema10[ema10.size()-2] <= ema20[ema20.size()-2] && ema10[ema10.size()-1] > ema20[ema20.size()-1]){
+                GOLONG = true;
+                // when in trade, signal is still being updated, it's is possible that both flag will be turned on. this 
+                // line makes sure that only the most recently signal is preserved
+                GOSHORT = false;
             }
-
-            if(sz >= 20){
-                if(sz == 20)
-                    ema20.push_back(accumulate(last.begin(), last.end(), 0.0)/20);
-                else
-                    ema20.push_back(ema20.back() + (2.0/21.0)*(last.back()-ema20.back()));
-                cout << "|" << setprecision(5) << ema20.back();
-                logfile2 << "," << ema20.back();
-            }
-
-            cout << "\n";
-            logfile2 << endl;
-
-            /* ================================================================================================================= */
-            // this part is the strategy
-            /* 
-            if(sz > NUM_OF_BARS && !HAS_POSITION){
-                if(low[sz-1]>=low[sz-2] && high[sz-1]>high[sz-2]) GOLONG = true;
-                if(low[sz-1]<low[sz-2] && high[sz-1]<=high[sz-2]) GOSHORT = true;
-            }
-            */
-            
-            // ema10 empty should be redudant condition
-            if(ema20.size()>2 && ema10.size()>2 && !HAS_POSITION){
-                if(ema10[ema10.size()-2] <= ema20[ema20.size()-2] && ema10[ema10.size()-1] > ema20[ema20.size()-1]) GOLONG = true;
-                if(ema10[ema10.size()-2] >= ema20[ema20.size()-2] && ema10[ema10.size()-1] < ema20[ema20.size()-1]) GOSHORT = true;
-            }
-
-            //GOSHORT = true;
-            //if(!ema10.empty() && !HAS_POSITION){
-            //if(ema10.back() < price) GOLONG = true;
-            //if(ema10.back() > price) GOSHORT = true;
-            //}
-
-            /* ================================================================================================================= */
-            // place orders
-            if(!HAS_POSITION){
-                if(open.size()>=NUM_OF_BARS){
-                //three bar
-                    s_sp = *min_element(low.end()-NUM_OF_BARS, low.end()) - tick;
-                    
-                    s_order_parent.totalQuantity = totalQuantity;
-                    s_order_parent.action = "SELL";
-                    s_order_stoploss.action = "BUY";
-                    s_order_profittaking.action = "BUY";
-                    
-                    if(USEMKTENTRY){
-                        s_order_parent.orderType = "MKT";
-                        s_order_stoploss.auxPrice = initial_max;
-                        s_order_profittaking.lmtPrice = initial_min;
-                    }
-                    else{
-                        s_order_parent.orderType = "STP";
-                        s_order_parent.auxPrice = s_sp;
-                        s_order_stoploss.auxPrice = s_sp + sl;
-                        s_order_profittaking.lmtPrice = s_sp - tp;
-                    }
-
-                    //s_order_stoploss.orderType = "STP";
-                    s_order_stoploss.orderType = "STP";
-                    s_order_profittaking.orderType = "LMT";
-                    s_order_stoploss.totalQuantity = s_order_parent.totalQuantity;
-                    s_order_profittaking.totalQuantity =  s_order_parent.totalQuantity;
-
-                    /* all or none is not supported in forex
-                    s_order_parent.allOrNone = true;
-                    s_order_stoploss.allOrNone = true;
-                    s_order_profittaking.allOrNone = true;
-                    */
-
-                    s_order_parent.transmit = USETRAIL?true:false;
-                    s_order_stoploss.transmit = false;
-                    //s_order_profittaking.transmit = false;
-
-
-                    // assume one tick spread, so stop price is equal to high_of_bid + 2 ticks
-                    l_sp = *max_element(high.end()-NUM_OF_BARS, high.end()) + 2*tick;
-                    
-                    l_order_parent.totalQuantity = totalQuantity;
-                    l_order_parent.action = "BUY";
-                    l_order_stoploss.action = "SELL";
-                    l_order_profittaking.action = "SELL";
-                    
-                    if(USEMKTENTRY){
-                        l_order_parent.orderType = "MKT";
-                        l_order_stoploss.auxPrice = initial_min;
-                        l_order_profittaking.lmtPrice = initial_max;
-                    }
-                    else{
-                        l_order_parent.orderType = "STP";
-                        l_order_parent.auxPrice = l_sp;
-                        l_order_stoploss.auxPrice = l_sp - sl;
-                        l_order_profittaking.lmtPrice = l_sp + tp;
-                    }
-
-                    //l_order_stoploss.orderType = "STP";
-                    l_order_stoploss.orderType = "STP";
-                    l_order_profittaking.orderType = "LMT";
-                    l_order_stoploss.totalQuantity = l_order_parent.totalQuantity;
-                    l_order_profittaking.totalQuantity =  l_order_parent.totalQuantity;
-                    
-
-                    /* all or none is not supported in forex
-                    l_order_parent.allOrNone = true;
-                    l_order_stoploss.allOrNone = true;
-                    l_order_profittaking.allOrNone = true;
-                    */
-
-                    l_order_parent.transmit = USETRAIL?true:false;
-                    l_order_stoploss.transmit = false;
-                    //l_order_profittaking.transmit = false;
-
-                    if(BIDIRECTION){
-                        oca << m_orderId;
-                        s_order_parent.ocaGroup = oca.str();
-                        l_order_parent.ocaGroup = oca.str();
-                    }
-
-                    if(GOLONG){
-                        if(m_orderId%2!=0){
-                            parentId = m_orderId + 1;
-                            }
-                        else{
-                            parentId = m_orderId;
-                        }
-
-                        l_order_stoploss.parentId = parentId;
-                        l_order_profittaking.parentId = parentId;
-                        cout << "Client " << m_clientId << ": Placing a MKT long order, orderId " << parentId << ".\n";
-                        m_pClient->placeOrder(parentId, m_contract, l_order_parent);	
-                        if(!USETRAIL){
-                            m_pClient->placeOrder(parentId + 1, m_contract, l_order_stoploss);
-                            m_pClient->placeOrder(parentId + 2, m_contract, l_order_profittaking);
-                        }
-                        GOLONG = false;
-                        HAS_POSITION = 1;
-                        m_modified = false;
-                        m_orderId = parentId + (USETRAIL?1:3);
-                        cout << "Client " << m_clientId << ": New orderId is " << m_orderId << ".\n";
-                    }
-                    
-                    if(GOSHORT){
-                        if(m_orderId%2!=0){
-                            parentId = m_orderId;
-                            }
-                        else{
-                            parentId = m_orderId + 1;
-                        }
-
-                        s_order_stoploss.parentId = parentId;
-                        s_order_profittaking.parentId = parentId;
-                        
-                        cout << "Client " << m_clientId << ": Placing a MKT short order, orderId " << parentId << ".\n";
-                        m_pClient->placeOrder(parentId, m_contract, s_order_parent);	
-                        if(!USETRAIL){
-                            m_pClient->placeOrder(parentId + 1, m_contract, s_order_stoploss);
-                            m_pClient->placeOrder(parentId + 2, m_contract, s_order_profittaking);
-                        }
-                        GOSHORT = false;
-                        HAS_POSITION = -1;
-                        m_modified = false;
-                        m_orderId = parentId + (USETRAIL?1:3);
-                        cout << "Client " << m_clientId << ": New orderId is " << m_orderId << ".\n";
-                    }
-                } 
-            }
-            else {
-                //cout << "Client " << m_clientId << ": There are positions currently!" << endl;
+            if(ema10[ema10.size()-2] >= ema20[ema20.size()-2] && ema10[ema10.size()-1] < ema20[ema20.size()-1]){
+                GOSHORT = true;
+                GOLONG = false;
             }
         }
 
-        //if(HAS_POSITION>0 && price-avgPrice>sl){}
-    }
+        //GOSHORT = true;
+        //if(!ema10.empty() && !HAS_POSITION){
+        //if(ema10.back() < price) GOLONG = true;
+        //if(ema10.back() > price) GOSHORT = true;
+        //}
 
-    if(field == 2){
-        ask = price;
-        //printf("TickerId = %d, TickType = %d, price = %f\n", static_cast<int>(tickerId), field, price);
+        /* ================================================================================================================= */
+        // place orders
+        if(!HAS_POSITION){
+            if(open.size()>=NUM_OF_BARS){
+            //three bar
+                s_sp = *min_element(low.end()-NUM_OF_BARS, low.end()) - tick;
+                
+                s_order_parent.totalQuantity = totalQuantity;
+                s_order_parent.orderRef = "from client " + clientIdStr;
+                s_order_parent.action = "SELL";
+                s_order_stoploss.action = "BUY";
+                s_order_profittaking.action = "BUY";
+                
+                if(USEMKTENTRY){
+                    s_order_parent.orderType = "MKT";
+                    s_order_stoploss.auxPrice = initial_max;
+                    s_order_profittaking.lmtPrice = initial_min;
+                }
+                else{
+                    s_order_parent.orderType = "STP";
+                    s_order_parent.auxPrice = s_sp;
+                    s_order_stoploss.auxPrice = s_sp + sl;
+                    s_order_profittaking.lmtPrice = s_sp - tp;
+                }
+
+                //s_order_stoploss.orderType = "STP";
+                s_order_stoploss.orderType = "STP";
+                s_order_profittaking.orderType = "LMT";
+                s_order_stoploss.totalQuantity = s_order_parent.totalQuantity;
+                s_order_profittaking.totalQuantity =  s_order_parent.totalQuantity;
+
+                /* all or none is not supported in forex
+                s_order_parent.allOrNone = true;
+                s_order_stoploss.allOrNone = true;
+                s_order_profittaking.allOrNone = true;
+                */
+
+                s_order_parent.transmit = USETRAIL?true:false;
+                s_order_stoploss.transmit = false;
+                //s_order_profittaking.transmit = false;
+
+                // assume one tick spread, so stop price is equal to high_of_bid + 2 ticks
+                l_sp = *max_element(high.end()-NUM_OF_BARS, high.end()) + 2*tick;
+                
+                l_order_parent.totalQuantity = totalQuantity;
+                l_order_parent.orderRef = "from client " + clientIdStr;
+                l_order_parent.action = "BUY";
+                l_order_stoploss.action = "SELL";
+                l_order_profittaking.action = "SELL";
+                
+                if(USEMKTENTRY){
+                    l_order_parent.orderType = "MKT";
+                    l_order_stoploss.auxPrice = initial_min;
+                    l_order_profittaking.lmtPrice = initial_max;
+                }
+                else{
+                    l_order_parent.orderType = "STP";
+                    l_order_parent.auxPrice = l_sp;
+                    l_order_stoploss.auxPrice = l_sp - sl;
+                    l_order_profittaking.lmtPrice = l_sp + tp;
+                }
+
+                //l_order_stoploss.orderType = "STP";
+                l_order_stoploss.orderType = "STP";
+                l_order_profittaking.orderType = "LMT";
+                l_order_stoploss.totalQuantity = l_order_parent.totalQuantity;
+                l_order_profittaking.totalQuantity =  l_order_parent.totalQuantity;
+                
+
+                /* all or none is not supported in forex
+                l_order_parent.allOrNone = true;
+                l_order_stoploss.allOrNone = true;
+                l_order_profittaking.allOrNone = true;
+                */
+
+                l_order_parent.transmit = USETRAIL?true:false;
+                l_order_stoploss.transmit = false;
+                //l_order_profittaking.transmit = false;
+
+                if(BIDIRECTION){
+                    oca << m_orderId;
+                    s_order_parent.ocaGroup = oca.str();
+                    l_order_parent.ocaGroup = oca.str();
+                }
+
+                if(GOLONG){
+                    if(m_orderId%2!=0){
+                        parentId = m_orderId + 1;
+                        }
+                    else{
+                        parentId = m_orderId;
+                    }
+
+                    l_order_stoploss.parentId = parentId;
+                    l_order_profittaking.parentId = parentId;
+                    cout << "Client " << m_clientId << ": Placing a MKT long order, orderId " << parentId << ".\n";
+                    m_pClient->placeOrder(parentId, m_contract, l_order_parent);	
+                    if(!USETRAIL){
+                        m_pClient->placeOrder(parentId + 1, m_contract, l_order_stoploss);
+                        m_pClient->placeOrder(parentId + 2, m_contract, l_order_profittaking);
+                    }
+                    GOLONG = false;
+                    HAS_POSITION = 1;
+                    m_modified = false;
+                    m_orderId = parentId + (USETRAIL?1:3);
+                    cout << "Client " << m_clientId << ": New orderId is " << m_orderId << ".\n";
+                }
+                
+                if(GOSHORT){
+                    if(m_orderId%2!=0){
+                        parentId = m_orderId;
+                        }
+                    else{
+                        parentId = m_orderId + 1;
+                    }
+
+                    s_order_stoploss.parentId = parentId;
+                    s_order_profittaking.parentId = parentId;
+                    
+                    cout << "Client " << m_clientId << ": Placing a MKT short order, orderId " << parentId << ".\n";
+                    m_pClient->placeOrder(parentId, m_contract, s_order_parent);	
+                    if(!USETRAIL){
+                        m_pClient->placeOrder(parentId + 1, m_contract, s_order_stoploss);
+                        m_pClient->placeOrder(parentId + 2, m_contract, s_order_profittaking);
+                    }
+                    GOSHORT = false;
+                    HAS_POSITION = -1;
+                    m_modified = false;
+                    m_orderId = parentId + (USETRAIL?1:3);
+                    cout << "Client " << m_clientId << ": New orderId is " << m_orderId << ".\n";
+                }
+            } 
+        }
+        else {
+            //cout << "Client " << m_clientId << ": There are positions currently!" << endl;
+        }
     }
+    //if(HAS_POSITION>0 && price-avgPrice>sl){}
 }
 
 void PosixTestClient::tickSize( TickerId tickerId, TickType field, int size) {}

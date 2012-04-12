@@ -13,7 +13,7 @@
 #include <pthread.h>
 #include <iostream>
 
-#define NUM_OF_THREADS 2
+//#define NUM_OF_THREADS 2
 using namespace std;
 
 const unsigned MAX_ATTEMPTS = 5000;
@@ -78,7 +78,7 @@ int main(int argc, char** argv)
     int clientId;
 
     while ((c = getopt(argc, argv, "c:n:t:")) != -1){
-        cout << "list of parameters: " << c << endl;
+        //cout << "list of parameters: " << c << endl;
         switch (c)
         {
             case 'c':
@@ -166,5 +166,6 @@ int main(int argc, char** argv)
     printf ("End of EUR.USD automatic trading Test\n");
     pthread_exit(NULL);
     */
+    //Py_Exit(0);
     return EXIT_SUCCESS;
 }
